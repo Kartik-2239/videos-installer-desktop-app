@@ -17,6 +17,9 @@ env/
 # Logs
 *.log
 
+# App data
+downloads/
+
 # OS
 .DS_Store
 Thumbs.db

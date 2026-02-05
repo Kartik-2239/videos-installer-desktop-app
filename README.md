@@ -1,12 +1,24 @@
-## Video Downloader
+# Video Downloader
 
-Lightweight PySide6 app that downloads videos with `yt-dlp` + `ffmpeg` and previews them in-app.
+Lightweight PySide6 app that downloads videos with `yt-dlp` + `ffmpeg` and previews them inside the UI.
+
+## Requirements
+
+- Python 3.12+
+- `yt-dlp` installed and on your PATH
+- `ffmpeg` installed and on your PATH
+- `PySide6` installed
 
 ## Run
 
 ```bash
 python main.py
 ```
+
+## Notes
+
+- Downloads are saved into `./downloads` by default.
+- Use **Open Video** to test playback with an existing file.
 
 ## Possible Things To Add
 
