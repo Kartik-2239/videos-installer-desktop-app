@@ -1,4 +1,4 @@
-# Video Downloader
+# Video Downloader (made by codex)
 
 Lightweight PySide6 app that downloads videos with `yt-dlp` + `ffmpeg` and previews them inside the UI.
 
@@ -20,10 +20,6 @@ python main.py
 ```bash
 pyinstaller --noconfirm --windowed --name "VideoDownloader" main.py
 ```
-
-## Built With Codex
-
-Built with Codex.
 
 ## Notes
 
