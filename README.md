@@ -15,6 +15,16 @@ Lightweight PySide6 app that downloads videos with `yt-dlp` + `ffmpeg` and previ
 python main.py
 ```
 
+## Build (macOS)
+
+```bash
+pyinstaller --noconfirm --windowed --name "VideoDownloader" main.py
+```
+
+## Built With Codex
+
+Built with Codex.
+
 ## Notes
 
 - Downloads are saved into `./downloads` by default.

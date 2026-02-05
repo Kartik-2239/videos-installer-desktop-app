@@ -2,10 +2,11 @@ import re
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, Qt, QUrl
-from PySide6.QtGui import QFont, QPainterPath, QRegion
+from PySide6.QtCore import QByteArray, QProcess, Qt, QSize, QUrl
+from PySide6.QtGui import QFont, QIcon, QPainter, QPainterPath, QPixmap, QRegion, QImage
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QStyle,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -35,6 +37,16 @@ def human_path(path: Path) -> str:
         return str(path.resolve())
     except OSError:
         return str(path)
+
+
+def svg_icon(svg: str, size: int) -> QIcon:
+    image = QImage(size, size, QImage.Format_ARGB32)
+    image.fill(Qt.transparent)
+    painter = QPainter(image)
+    renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+    renderer.render(painter)
+    painter.end()
+    return QIcon(QPixmap.fromImage(image))
 
 
 class RoundedFrame(QFrame):
@@ -172,7 +184,7 @@ class VideoDownloader(QMainWindow):
         filename_label = QLabel("FILE NAME")
         filename_label.setObjectName("FieldLabel")
         self.filename_input = QLineEdit()
-        self.filename_input.setText("New_Video_Export")
+        self.filename_input.setText("%(title)s.%(ext)s")
 
         row_quality_format = QHBoxLayout()
         quality_box = QVBoxLayout()
@@ -253,11 +265,42 @@ class VideoDownloader(QMainWindow):
         right_layout = QVBoxLayout(right)
         right_layout.setSpacing(14)
 
+        theme_row = QHBoxLayout()
+        theme_row.addStretch(1)
+        self.theme_toggle = QToolButton()
+        self.theme_toggle.setObjectName("ThemeToggle")
+        self.theme_toggle.setCheckable(True)
+        self.theme_toggle.setToolTip("Toggle dark theme")
+        self._sun_icon = svg_icon(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#f01d85">'
+            '<circle cx="12" cy="12" r="5"/>'
+            '<g stroke="#f01d85" stroke-width="2" stroke-linecap="round">'
+            '<line x1="12" y1="1" x2="12" y2="4"/>'
+            '<line x1="12" y1="20" x2="12" y2="23"/>'
+            '<line x1="1" y1="12" x2="4" y2="12"/>'
+            '<line x1="20" y1="12" x2="23" y2="12"/>'
+            '<line x1="4" y1="4" x2="6" y2="6"/>'
+            '<line x1="18" y1="18" x2="20" y2="20"/>'
+            '<line x1="18" y1="6" x2="20" y2="4"/>'
+            '<line x1="4" y1="20" x2="6" y2="18"/>'
+            "</g></svg>",
+            12,
+        )
+        self._moon_icon = svg_icon(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#f7c6de">'
+            '<path d="M21 14.5A8.5 8.5 0 1 1 9.5 3a7 7 0 1 0 11.5 11.5Z"/></svg>',
+            12,
+        )
+        self.theme_toggle.setIcon(self._sun_icon)
+        self.theme_toggle.setIconSize(QSize(12, 12))
+        self.theme_toggle.toggled.connect(self._on_theme_toggled)
+        theme_row.addWidget(self.theme_toggle)
+
         preview_title = QLabel("Preview")
         preview_title.setObjectName("PreviewTitle")
 
         self.video_widget = QVideoWidget()
-        self.video_widget.setMinimumSize(160, 260)
+        self.video_widget.setMinimumSize(160, 200)
         self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_widget.setStyleSheet("")
 
@@ -278,7 +321,7 @@ class VideoDownloader(QMainWindow):
 
         phone_frame = RoundedFrame(radius=24)
         phone_frame.setObjectName("PhoneFrame")
-        phone_frame.setMinimumSize(160, 260)
+        phone_frame.setMinimumSize(160, 200)
         phone_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         phone_layout = QVBoxLayout(phone_frame)
         phone_layout.setContentsMargins(8, 8, 8, 8)
@@ -334,6 +377,7 @@ class VideoDownloader(QMainWindow):
         controls_layout.addLayout(time_row)
         controls_layout.addLayout(controls_row)
 
+        right_layout.addLayout(theme_row)
         right_layout.addWidget(preview_title)
         right_layout.addWidget(preview_card, 1)
         right_layout.addWidget(controls_card)
@@ -344,7 +388,7 @@ class VideoDownloader(QMainWindow):
         root_layout.addWidget(card)
 
         self.setCentralWidget(root)
-        self._apply_styles()
+        self._apply_styles("Light")
 
     def _choose_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -356,7 +400,7 @@ class VideoDownloader(QMainWindow):
 
     def _create_subfolder(self) -> None:
         base = Path(self.folder_input.text().strip() or self.default_downloads)
-        name, ok = QInputDialog.getText(self, "New Folder", "Subfolder name:")
+        name, ok = QInputDialog.getText(self, "New Folder", "")
         if not ok or not name.strip():
             return
         folder = self._sanitize_folder_name(name)
@@ -427,7 +471,27 @@ class VideoDownloader(QMainWindow):
         target_folder = base_folder / self._sanitize_folder_name(subfolder)
         target_folder.mkdir(parents=True, exist_ok=True)
 
-        template_text = self.filename_input.text().strip() or "New_Video_Export"
+        template_text = self.filename_input.text().strip() or "%(title)s.%(ext)s"
+        if "%(" not in template_text:
+            base = Path(template_text).stem
+            base = base or "video"
+            suffix = ""
+            existing = list(target_folder.glob(f"{base}*.*"))
+            if existing:
+                max_n = 0
+                for file in existing:
+                    stem = file.stem
+                    if stem == base:
+                        max_n = max(max_n, 1)
+                    else:
+                        match = re.match(rf"^{re.escape(base)}_(\d+)$", stem)
+                        if match:
+                            max_n = max(max_n, int(match.group(1)))
+                if max_n > 0:
+                    suffix = f"_{max_n + 1}"
+                else:
+                    suffix = "_1"
+            template_text = f"{base}{suffix}.%(ext)s"
         if "%(ext)" not in template_text:
             template_text = f"{template_text}.%(ext)s"
         output_template = target_folder / template_text
@@ -616,142 +680,278 @@ class VideoDownloader(QMainWindow):
             self.preview_label.setText("")
 
 
-    def _apply_styles(self) -> None:
-        self.setStyleSheet(
-            """
-            QMainWindow { background: #fdeff4; }
-            QWidget#MainCard {
-                background: #ffffff;
-                border: 1px solid #f1d7e6;
-                border-radius: 28px;
-            }
-            QWidget#LeftPanel { background: #ffffff; }
-            QWidget#RightPanel {
-                background: #ffffff;
-                border-left: 0px;
-            }
-            QLabel { color: #1f2430; }
-            QLabel#HeaderTitle { font-size: 18px; font-weight: 700; }
-            QLabel#SubtitleLabel { color: #8a8f9c; }
-            QLabel#PreviewTitle { font-size: 14px; font-weight: 700; }
-            QLabel#PreviewLabel { color: #7c8190; font-size: 11px; }
-            QLabel#TimeLabel { color: #8a8f9c; font-size: 11px; }
-            QLabel#SectionLabel {
-                color: #f05aa6;
-                font-weight: 700;
-                font-size: 11px;
-            }
-            QLabel#FieldLabel {
-                color: #a0a4b2;
-                font-weight: 600;
-                font-size: 11px;
-            }
-            QLabel#IconBadge {
-                background: #ffe1ef;
-                color: #f01d85;
-                border-radius: 14px;
-                min-width: 36px;
-                min-height: 36px;
-                font-weight: 700;
-            }
-            QFrame#Divider { background: #f1d7e6; }
-            QLineEdit, QComboBox {
-                background: #ffffff;
-                color: #1f2430;
-                min-height: 46px;
-                padding: 0px 7px;
-                border: 1px solid #f1d7e6;
-                border-radius: 14px;
-                font-size: 13px;
-            }
-            QComboBox::drop-down { width: 18px; border: 0px; background: transparent; }
-            QComboBox::down-arrow { width: 10px; height: 10px; }
-            QComboBox QAbstractItemView { background: #ffffff; color: #1f2430; }
-            QCheckBox { color: #1f2430; }
-            QPushButton {
-                background: #f6eff6;
-                color: #1f2430;
-                padding: 8px 16px;
-                border-radius: 14px;
-                font-weight: 600;
-                border: 1px solid #f1d7e6;
-            }
-            QPushButton#PrimaryButton {
-                background: #f01d85;
-                color: #ffffff;
-                border: none;
-                min-height: 43px;
-                font-size: 14px;
-                padding: 6px 12px;
-            }
-            QPushButton#GhostButton {
-                background: #ffffff;
-                color: #1f2430;
-                border: 1px solid #f1d7e6;
-            }
-            QPushButton#FolderButton { min-height: 46px; }
-            QProgressBar {
-                height: 16px;
-                border-radius: 8px;
-                background: #f6e7f0;
-                text-align: center;
-                color: #1f2430;
-            }
-            QProgressBar::chunk {
-                background: #f58abf;
-                border-radius: 8px;
-            }
-            QWidget#OptionsCard {
-                background: #ffffff;
-                border: 1px solid #f1d7e6;
-                border-radius: 18px;
-            }
-            QWidget#PreviewCard {
-                background: #ffffff;
-                border: 1px solid #f1d7e6;
-                border-radius: 26px;
-            }
-            QWidget#ControlsCard {
-                background: #ffffff;
-                border: 1px solid #f1d7e6;
-                border-radius: 18px;
-            }
-            QWidget#PhoneFrame {
-                background: transparent;
-                border-radius: 24px;
-            }
-            QPushButton#ControlButton {
-                background: #ffffff;
-                color: #1f2430;
-                border: 1px solid #f1d7e6;
-                border-radius: 12px;
-                min-height: 36px;
-                padding: 6px 12px;
-            }
-            QSlider#SeekSlider::groove:horizontal {
-                height: 6px;
-                background: #f3e6ee;
-                border-radius: 3px;
-            }
-            QSlider#SeekSlider::handle:horizontal {
-                width: 14px;
-                margin: -6px 0;
-                border-radius: 7px;
-                background: #f01d85;
-            }
-            QSlider#VolumeSlider::groove:horizontal {
-                height: 4px;
-                background: #f3e6ee;
-                border-radius: 2px;
-            }
-            QSlider#VolumeSlider::handle:horizontal {
-                width: 12px;
-                margin: -5px 0;
-                border-radius: 6px;
-                background: #f58abf;
-            }
-            """
-        )
+    def _apply_styles(self, theme: str) -> None:
+        if theme == "Dark":
+            self.setStyleSheet(
+                """
+                QMainWindow { background: #0f0b0d; }
+                QWidget#MainCard {
+                    background: #1c141a;
+                    border: 1px solid #3b2730;
+                    border-radius: 28px;
+                }
+                QWidget#LeftPanel { background: #1c141a; }
+                QWidget#RightPanel { background: #1c141a; }
+                QLabel { color: #e9e1e6; }
+                QLabel#HeaderTitle { font-size: 18px; font-weight: 700; }
+                QLabel#SubtitleLabel { color: #b690a5; }
+                QLabel#PreviewTitle { font-size: 14px; font-weight: 700; }
+                QLabel#PreviewLabel { color: #b690a5; font-size: 11px; }
+                QLabel#TimeLabel { color: #b690a5; font-size: 11px; }
+                QToolButton#ThemeToggle {
+                    background: #26161f;
+                    border: 1px solid #38212b;
+                    border-radius: 12px;
+                    padding: 4px;
+                    min-width: 26px;
+                    min-height: 26px;
+                }
+                QToolButton#ThemeToggle:checked {
+                    background: #2a1b22;
+                    border: 1px solid #3a2430;
+                }
+                QLabel#SectionLabel {
+                    color: #b25574;
+                    font-weight: 700;
+                    font-size: 11px;
+                }
+                QLabel#FieldLabel {
+                    color: #8c7484;
+                    font-weight: 600;
+                    font-size: 11px;
+                }
+                QLabel#IconBadge {
+                    background: #2a1b22;
+                    color: #d27fa0;
+                    border-radius: 14px;
+                    min-width: 36px;
+                    min-height: 36px;
+                    font-weight: 700;
+                }
+                QFrame#Divider { background: #1a0f14; }
+                QLineEdit, QComboBox {
+                    background: #160e13;
+                    color: #e9e1e6;
+                    min-height: 46px;
+                    padding: 0px 7px;
+                    border: 1px solid #3b2730;
+                    border-radius: 14px;
+                    font-size: 13px;
+                }
+                QComboBox::drop-down { width: 18px; border: 0px; background: transparent; }
+                QComboBox::down-arrow { width: 10px; height: 10px; }
+                QComboBox QAbstractItemView { background: #160e13; color: #e9e1e6; }
+                QCheckBox { color: #e9e1e6; }
+                QPushButton {
+                    background: #26161f;
+                    color: #e9e1e6;
+                    padding: 8px 16px;
+                    border-radius: 14px;
+                    font-weight: 600;
+                    border: 1px solid #3b2730;
+                }
+                QPushButton#PrimaryButton {
+                    background: #5b2138;
+                    color: #f5e9ef;
+                    border: none;
+                    min-height: 43px;
+                    font-size: 14px;
+                    padding: 6px 12px;
+                }
+                QPushButton#FolderButton { min-height: 46px; max-height: 46px; padding: 0px 14px; }
+                QWidget#OptionsCard {
+                    background: #1c141a;
+                    border: 1px solid #3b2730;
+                    border-radius: 18px;
+                }
+                QWidget#PreviewCard {
+                    background: #1c141a;
+                    border: 1px solid #3b2730;
+                    border-radius: 26px;
+                }
+                QWidget#ControlsCard {
+                    background: #1c141a;
+                    border: 1px solid #3b2730;
+                    border-radius: 18px;
+                }
+                QWidget#PhoneFrame {
+                    background: transparent;
+                    border-radius: 24px;
+                }
+                QPushButton#ControlButton {
+                    background: #160e13;
+                    color: #e9e1e6;
+                    border: 1px solid #3b2730;
+                    border-radius: 12px;
+                    min-height: 36px;
+                    padding: 6px 12px;
+                }
+                QSlider#SeekSlider::groove:horizontal {
+                    height: 6px;
+                    background: #2a1b22;
+                    border-radius: 3px;
+                }
+                QSlider#SeekSlider::handle:horizontal {
+                    width: 14px;
+                    margin: -6px 0;
+                    border-radius: 7px;
+                    background: #b25574;
+                }
+                QSlider#VolumeSlider::groove:horizontal {
+                    height: 4px;
+                    background: #2a1b22;
+                    border-radius: 2px;
+                }
+                QSlider#VolumeSlider::handle:horizontal {
+                    width: 12px;
+                    margin: -5px 0;
+                    border-radius: 6px;
+                    background: #b25574;
+                }
+                """
+            )
+        else:
+            self.setStyleSheet(
+                """
+                QMainWindow { background: #fdeff4; }
+                QWidget#MainCard {
+                    background: #ffffff;
+                    border: 1px solid #f1d7e6;
+                    border-radius: 28px;
+                }
+                QWidget#LeftPanel { background: #ffffff; }
+                QWidget#RightPanel { background: #ffffff; }
+                QLabel { color: #1f2430; }
+                QLabel#HeaderTitle { font-size: 18px; font-weight: 700; }
+                QLabel#SubtitleLabel { color: #8a8f9c; }
+                QLabel#PreviewTitle { font-size: 14px; font-weight: 700; }
+                QLabel#PreviewLabel { color: #7c8190; font-size: 11px; }
+                QLabel#TimeLabel { color: #8a8f9c; font-size: 11px; }
+                QToolButton#ThemeToggle {
+                    background: #ffffff;
+                    border: 1px solid #f1d7e6;
+                    border-radius: 12px;
+                    padding: 4px;
+                    min-width: 26px;
+                    min-height: 26px;
+                }
+                QToolButton#ThemeToggle:checked {
+                    background: #ffe1ef;
+                    border: 1px solid #f1d7e6;
+                }
+                QLabel#SectionLabel {
+                    color: #f05aa6;
+                    font-weight: 700;
+                    font-size: 11px;
+                }
+                QLabel#FieldLabel {
+                    color: #a0a4b2;
+                    font-weight: 600;
+                    font-size: 11px;
+                }
+                QLabel#IconBadge {
+                    background: #ffe1ef;
+                    color: #f01d85;
+                    border-radius: 14px;
+                    min-width: 36px;
+                    min-height: 36px;
+                    font-weight: 700;
+                }
+                QFrame#Divider { background: #f1d7e6; }
+                QLineEdit, QComboBox {
+                    background: #ffffff;
+                    color: #1f2430;
+                    min-height: 46px;
+                    padding: 0px 7px;
+                    border: 1px solid #f1d7e6;
+                    border-radius: 14px;
+                    font-size: 13px;
+                }
+                QComboBox::drop-down { width: 18px; border: 0px; background: transparent; }
+                QComboBox::down-arrow { width: 10px; height: 10px; }
+                QComboBox QAbstractItemView { background: #ffffff; color: #1f2430; }
+                QCheckBox { color: #1f2430; }
+                QPushButton {
+                    background: #f6eff6;
+                    color: #1f2430;
+                    padding: 8px 16px;
+                    border-radius: 14px;
+                    font-weight: 600;
+                    border: 1px solid #f1d7e6;
+                }
+                QPushButton#PrimaryButton {
+                    background: #f01d85;
+                    color: #ffffff;
+                    border: none;
+                    min-height: 43px;
+                    font-size: 14px;
+                    padding: 6px 12px;
+                }
+                QPushButton#GhostButton {
+                    background: #ffffff;
+                    color: #1f2430;
+                    border: 1px solid #f1d7e6;
+                }
+                QPushButton#FolderButton { min-height: 46px; max-height: 46px; padding: 0px 14px; }
+                QWidget#OptionsCard {
+                    background: #ffffff;
+                    border: 1px solid #f1d7e6;
+                    border-radius: 18px;
+                }
+                QWidget#PreviewCard {
+                    background: #ffffff;
+                    border: 1px solid #f1d7e6;
+                    border-radius: 26px;
+                }
+                QWidget#ControlsCard {
+                    background: #ffffff;
+                    border: 1px solid #f1d7e6;
+                    border-radius: 18px;
+                }
+                QWidget#PhoneFrame {
+                    background: transparent;
+                    border-radius: 24px;
+                }
+                QPushButton#ControlButton {
+                    background: #ffffff;
+                    color: #1f2430;
+                    border: 1px solid #f1d7e6;
+                    border-radius: 12px;
+                    min-height: 36px;
+                    padding: 6px 12px;
+                }
+                QSlider#SeekSlider::groove:horizontal {
+                    height: 6px;
+                    background: #f3e6ee;
+                    border-radius: 3px;
+                }
+                QSlider#SeekSlider::handle:horizontal {
+                    width: 14px;
+                    margin: -6px 0;
+                    border-radius: 7px;
+                    background: #f01d85;
+                }
+                QSlider#VolumeSlider::groove:horizontal {
+                    height: 4px;
+                    background: #f3e6ee;
+                    border-radius: 2px;
+                }
+                QSlider#VolumeSlider::handle:horizontal {
+                    width: 12px;
+                    margin: -5px 0;
+                    border-radius: 6px;
+                    background: #f58abf;
+                }
+                """
+            )
+
+    def _on_theme_toggled(self, checked: bool) -> None:
+        if checked:
+            self.theme_toggle.setIcon(self._moon_icon)
+            self._apply_styles("Dark")
+        else:
+            self.theme_toggle.setIcon(self._sun_icon)
+            self._apply_styles("Light")
 
 
 def main() -> None:
