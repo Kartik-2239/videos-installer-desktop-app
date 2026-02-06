@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sys
@@ -14,14 +15,13 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
-    QInputDialog,
     QFrame,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QProgressBar,
+    QSpinBox,
     QSizePolicy,
     QSpacerItem,
     QScrollArea,
@@ -67,30 +67,36 @@ class RoundedFrame(QFrame):
 class VideoDownloader(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Video downloader")
-        self.setMinimumSize(860, 600)
+        self.setWindowTitle("Orca")
+        self.setMinimumSize(860, 560)
 
         self.base_dir = Path(__file__).parent
         self.default_downloads = self.base_dir / "downloads"
         self.default_downloads.mkdir(parents=True, exist_ok=True)
+        self.state_path = Path.home() / ".local" / "state" / "orca" / "state.json"
+        self.storage_marker = Path.home() / "Library" / "Application Support" / "orca" / ".storage"
+        self.state = self._load_state()
+        self.last_folder_path = self.state.get("last_folder_path", str(self.default_downloads))
+        self._ensure_state_files()
 
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.MergedChannels)
-        self.process.readyRead.connect(lambda: self.process.readAll())
-        self.process.finished.connect(self.process.deleteLater)
+        self.process.readyReadStandardOutput.connect(self._on_process_output)
         self.process.finished.connect(self._on_process_finished)
         self.process.errorOccurred.connect(self._on_process_error)
-        # self.process.start(program, arguments)
 
 
         self._current_output_path: Path | None = None
         self._last_progress = 0
         self._last_info_line = ""
+        self._playlist_requested: int | None = None
+        self._playlist_total: int | None = None
+        self._last_output_base: str | None = None
 
         self._init_ui()
-        self._refresh_subfolders()
         self._sync_container_options()
         self._set_input_heights()
+        self._apply_state()
 
     def _init_ui(self) -> None:
         root = QWidget(self)
@@ -112,7 +118,7 @@ class VideoDownloader(QMainWindow):
         icon_badge = QLabel("DL")
         icon_badge.setAlignment(Qt.AlignCenter)
         icon_badge.setObjectName("IconBadge")
-        header_title = QLabel("Downloader")
+        header_title = QLabel("Orca")
         header_title.setObjectName("HeaderTitle")
         header_row.addWidget(icon_badge)
         header_row.addWidget(header_title)
@@ -129,25 +135,13 @@ class VideoDownloader(QMainWindow):
         folder_row = QHBoxLayout()
         self.folder_input = QLineEdit()
         self.folder_input.setReadOnly(True)
-        self.folder_input.setText(human_path(self.default_downloads))
+        self.folder_input.setText(self.last_folder_path)
         self.browse_btn = QPushButton("Choose Folder")
         self.browse_btn.setObjectName("FolderButton")
         self.browse_btn.clicked.connect(self._choose_folder)
         folder_row.addWidget(self.folder_input, 1)
         folder_row.addWidget(self.browse_btn)
         
-        subfolder_label = QLabel("SUBFOLDER")
-        subfolder_label.setObjectName("SectionLabel")
-        name_row = QHBoxLayout()
-        self.subfolder_combo = QComboBox()
-        self.subfolder_combo.setEditable(False)
-        self.subfolder_combo.currentTextChanged.connect(self._on_subfolder_changed)
-        self.new_sub_btn = QPushButton("New Folder")
-        self.new_sub_btn.setObjectName("FolderButton")
-        self.new_sub_btn.clicked.connect(self._create_subfolder)
-        name_row.addWidget(self.subfolder_combo, 1)
-        name_row.addWidget(self.new_sub_btn)
-
 
         tweak_group = QWidget()
         tweak_group.setObjectName("OptionsCard")
@@ -184,6 +178,19 @@ class VideoDownloader(QMainWindow):
         format_label.setObjectName("FieldLabel")
         self.format_input = QLineEdit()
         self.format_input.setPlaceholderText("Optional advanced -f string")
+
+        multi_label = QLabel("IS IT A PLAYLIST ?")
+        multi_label.setObjectName("FieldLabel")
+        multi_row = QHBoxLayout()
+        self.multi_files_check = QCheckBox("Enable")
+        self.multi_files_count = QSpinBox()
+        self.multi_files_count.setRange(1, 9999)
+        self.multi_files_count.setValue(5)
+        self.multi_files_count.setEnabled(False)
+        self.multi_files_check.toggled.connect(lambda checked: self.multi_files_count.setEnabled(checked))
+        multi_row.addWidget(self.multi_files_check)
+        multi_row.addStretch(1)
+        multi_row.addWidget(self.multi_files_count)
 
         filename_label = QLabel("FILE NAME")
         filename_label.setObjectName("FieldLabel")
@@ -222,6 +229,8 @@ class VideoDownloader(QMainWindow):
         tweak_layout.addWidget(self.audio_only_toggle)
         tweak_layout.addWidget(format_label)
         tweak_layout.addWidget(self.format_input)
+        tweak_layout.addWidget(multi_label)
+        tweak_layout.addLayout(multi_row)
         tweak_layout.addWidget(filename_label)
         tweak_layout.addWidget(self.filename_input)
 
@@ -252,8 +261,7 @@ class VideoDownloader(QMainWindow):
         left_content_layout.addWidget(self.url_input)
         left_content_layout.addWidget(save_label)
         left_content_layout.addLayout(folder_row)
-        left_content_layout.addWidget(subfolder_label)
-        left_content_layout.addLayout(name_row)
+        # no subfolder selection
         left_content_layout.addWidget(tweak_group)
         left_content_layout.addLayout(action_row)
         left_content_layout.addWidget(self.status)
@@ -303,8 +311,6 @@ class VideoDownloader(QMainWindow):
         self.theme_toggle.toggled.connect(self._on_theme_toggled)
         theme_row.addWidget(self.theme_toggle)
 
-        preview_title = QLabel("Preview")
-        preview_title.setObjectName("PreviewTitle")
 
         self.video_widget = QVideoWidget()
         self.video_widget.setMinimumSize(160, 200)
@@ -385,7 +391,6 @@ class VideoDownloader(QMainWindow):
         controls_layout.addLayout(controls_row)
 
         right_layout.addLayout(theme_row)
-        right_layout.addWidget(preview_title)
         right_layout.addWidget(preview_card, 1)
         right_layout.addWidget(controls_card)
         right_layout.addStretch(1)
@@ -399,42 +404,11 @@ class VideoDownloader(QMainWindow):
 
     def _choose_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(
-            self, "Choose download folder", str(self.default_downloads)
+            self, "Choose download folder", self.folder_input.text().strip() or str(self.default_downloads)
         )
         if path:
             self.folder_input.setText(path)
-            self._refresh_subfolders()
-
-    def _create_subfolder(self) -> None:
-        base = Path(self.folder_input.text().strip() or self.default_downloads)
-        name, ok = QInputDialog.getText(self, "New Folder", "")
-        if not ok or not name.strip():
-            return
-        folder = self._sanitize_folder_name(name)
-        target = base / folder
-        target.mkdir(parents=True, exist_ok=True)
-        self._refresh_subfolders(select=folder)
-
-    def _refresh_subfolders(self, select: str | None = None) -> None:
-        base = Path(self.folder_input.text().strip() or self.default_downloads)
-        base.mkdir(parents=True, exist_ok=True)
-        folders = sorted([p.name for p in base.iterdir() if p.is_dir()])
-        self.subfolder_combo.blockSignals(True)
-        self.subfolder_combo.clear()
-        self.subfolder_combo.addItems(folders)
-        if select and select in folders:
-            self.subfolder_combo.setCurrentText(select)
-        elif folders:
-            self.subfolder_combo.setCurrentIndex(0)
-        self.subfolder_combo.blockSignals(False)
-
-    def _on_subfolder_changed(self, _text: str) -> None:
-        pass
-
-    def _sanitize_folder_name(self, name: str) -> str:
-        cleaned = re.sub(r"[^\w\- ]+", "", name).strip()
-        cleaned = cleaned.replace(" ", "-")
-        return cleaned or "download"
+            self.last_folder_path = path
 
     def _sync_container_options(self) -> None:
         self.container_combo.blockSignals(True)
@@ -452,18 +426,17 @@ class VideoDownloader(QMainWindow):
         inputs = [
             self.url_input,
             self.folder_input,
-            self.subfolder_combo,
             self.quality_combo,
             self.resolution_combo,
             self.codec_combo,
             self.container_combo,
             self.format_input,
             self.filename_input,
+            self.multi_files_count,
         ]
         for widget in inputs:
             widget.setFixedHeight(height)
         self.browse_btn.setFixedHeight(height)
-        self.new_sub_btn.setFixedHeight(height)
 
     def _start_download(self) -> None:
         url = self.url_input.text().strip()
@@ -472,13 +445,12 @@ class VideoDownloader(QMainWindow):
             return
 
         base_folder = Path(self.folder_input.text().strip() or self.default_downloads)
-        subfolder = self.subfolder_combo.currentText().strip()
-        if not subfolder:
-            subfolder = "download"
-        target_folder = base_folder / self._sanitize_folder_name(subfolder)
+        self.last_folder_path = str(base_folder)
+        target_folder = base_folder
         target_folder.mkdir(parents=True, exist_ok=True)
 
         template_text = self.filename_input.text().strip() or "%(title)s.%(ext)s"
+        self._last_output_base = None
         if "%(" not in template_text:
             base = Path(template_text).stem
             base = base or "video"
@@ -498,6 +470,7 @@ class VideoDownloader(QMainWindow):
                     suffix = f"_{max_n + 1}"
                 else:
                     suffix = "_1"
+            self._last_output_base = f"{base}{suffix}"
             template_text = f"{base}{suffix}.%(ext)s"
         if "%(ext)" not in template_text:
             template_text = f"{template_text}.%(ext)s"
@@ -541,6 +514,15 @@ class VideoDownloader(QMainWindow):
             args += ["--merge-output-format", container]
 
 
+        if self._is_playlist_url(url):
+            if self.multi_files_check.isChecked():
+                limit = self.multi_files_count.value()
+                args += ["--playlist-end", str(limit)]
+                self._playlist_requested = limit
+            else:
+                self._playlist_requested = 0
+            self._playlist_total = None
+
         if "x.com/" in url or "twitter.com/" in url:
             args += ["--socket-timeout", "30", "--retries", "10", "--fragment-retries", "10", "--ignore-errors"]
 
@@ -565,6 +547,142 @@ class VideoDownloader(QMainWindow):
                 return str(bundled)
         return "yt-dlp"
 
+    def _is_playlist_url(self, url: str) -> bool:
+        return "list=" in url
+
+    def _maybe_update_playlist_total(self, line: str) -> None:
+        if self._playlist_total is not None:
+            return
+        total = None
+        match = re.search(r"of\s+(\d+)", line)
+        if match:
+            total = int(match.group(1))
+        else:
+            match = re.search(r"Downloading\s+(\d+)\s+(?:videos|items)", line, re.IGNORECASE)
+            if match:
+                total = int(match.group(1))
+        if total is None:
+            return
+        self._playlist_total = total
+        if self._playlist_requested and self._playlist_requested > total:
+            self._playlist_requested = 0
+            self.status.setText(f"Playlist has {total} videos. Downloading all.")
+            self.status.setVisible(True)
+
+    def _load_state(self) -> dict:
+        try:
+            if self.state_path.exists():
+                data = json.loads(self.state_path.read_text())
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            return {}
+        return {}
+
+    def _ensure_state_files(self) -> None:
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            if not self.state_path.exists():
+                payload = {"last_folder_path": self.last_folder_path}
+                self.state_path.write_text(json.dumps(payload, indent=2))
+            self.storage_marker.parent.mkdir(parents=True, exist_ok=True)
+            if not self.storage_marker.exists():
+                self.storage_marker.write_text("orca")
+        except Exception:
+            pass
+
+    def _save_state(self) -> None:
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "last_folder_path": self.last_folder_path,
+                "theme": "Dark" if self.theme_toggle.isChecked() else "Light",
+                "window_size": [self.width(), self.height()],
+                "window_pos": [self.x(), self.y()],
+                "filename_template": self.filename_input.text().strip(),
+                "quality": self.quality_combo.currentText(),
+                "resolution_cap": self.resolution_combo.currentText(),
+                "codec_preference": self.codec_combo.currentText(),
+                "output_container": self.container_combo.currentText(),
+                "audio_only": self.audio_only_toggle.isChecked(),
+                "format_selector": self.format_input.text().strip(),
+                "volume": self.volume_slider.value() if hasattr(self, "volume_slider") else 60,
+                "muted": self.mute_btn.isChecked() if hasattr(self, "mute_btn") else False,
+                "multi_files_enabled": self.multi_files_check.isChecked(),
+                "multi_files_count": self.multi_files_count.value(),
+            }
+            self.state_path.write_text(json.dumps(payload, indent=2))
+            self.storage_marker.parent.mkdir(parents=True, exist_ok=True)
+            if not self.storage_marker.exists():
+                self.storage_marker.write_text("orca")
+        except Exception:
+            pass
+
+    def _apply_state(self) -> None:
+        theme = self.state.get("theme", "Light")
+        if hasattr(self, "theme_toggle"):
+            self.theme_toggle.blockSignals(True)
+            self.theme_toggle.setChecked(theme == "Dark")
+            self.theme_toggle.blockSignals(False)
+            self._on_theme_toggled(theme == "Dark")
+
+        size = self.state.get("window_size")
+        if isinstance(size, list) and len(size) == 2:
+            try:
+                self.resize(int(size[0]), int(size[1]))
+            except Exception:
+                pass
+        pos = self.state.get("window_pos")
+        if isinstance(pos, list) and len(pos) == 2:
+            try:
+                self.move(int(pos[0]), int(pos[1]))
+            except Exception:
+                pass
+
+        filename = self.state.get("filename_template")
+        if isinstance(filename, str) and filename:
+            self.filename_input.setText(filename)
+        quality = self.state.get("quality")
+        if isinstance(quality, str) and quality:
+            self.quality_combo.setCurrentText(quality)
+        resolution = self.state.get("resolution_cap")
+        if isinstance(resolution, str) and resolution:
+            self.resolution_combo.setCurrentText(resolution)
+        codec = self.state.get("codec_preference")
+        if isinstance(codec, str) and codec:
+            self.codec_combo.setCurrentText(codec)
+
+        audio_only = self.state.get("audio_only")
+        if isinstance(audio_only, bool):
+            self.audio_only_toggle.setChecked(audio_only)
+            self._sync_container_options()
+
+        container = self.state.get("output_container")
+        if isinstance(container, str) and container:
+            self.container_combo.setCurrentText(container)
+
+        format_sel = self.state.get("format_selector")
+        if isinstance(format_sel, str) and format_sel:
+            self.format_input.setText(format_sel)
+
+        volume = self.state.get("volume")
+        if isinstance(volume, int) and hasattr(self, "volume_slider"):
+            self.volume_slider.setValue(volume)
+        muted = self.state.get("muted")
+        if isinstance(muted, bool) and hasattr(self, "mute_btn"):
+            self.mute_btn.setChecked(muted)
+
+        multi_enabled = self.state.get("multi_files_enabled")
+        if isinstance(multi_enabled, bool):
+            self.multi_files_check.setChecked(multi_enabled)
+        multi_count = self.state.get("multi_files_count")
+        if isinstance(multi_count, int):
+            self.multi_files_count.setValue(multi_count)
+
+    def closeEvent(self, event) -> None:
+        self._save_state()
+        super().closeEvent(event)
+
     def _cancel_download(self) -> None:
         if self.process.state() != QProcess.NotRunning:
             self.process.kill()
@@ -576,7 +694,6 @@ class VideoDownloader(QMainWindow):
     def _set_running(self, running: bool) -> None:
         self.download_btn.setEnabled(not running)
         self.url_input.setEnabled(not running)
-        self.subfolder_combo.setEnabled(not running)
 
     def _on_process_output(self) -> None:
         data = self.process.readAllStandardOutput().data().decode(errors="ignore")
@@ -586,6 +703,8 @@ class VideoDownloader(QMainWindow):
     def _parse_progress(self, line: str) -> None:
         if not line:
             return
+
+        self._maybe_update_playlist_total(line)
 
         match = re.search(r"\[download\]\s+(\d{1,3}\.\d+)%", line)
         if match:
@@ -621,12 +740,22 @@ class VideoDownloader(QMainWindow):
         self.status.setVisible(True)
         self._set_status_color(error=False)
 
-        latest = self._find_latest_video()
-        if latest:
-            self._load_preview(latest)
+        mp4_path = None
+        if self._current_output_path:
+            if self._last_output_base:
+                candidate = self._current_output_path / f"{self._last_output_base}.mp4"
+                if candidate.exists():
+                    mp4_path = candidate
+            else:
+                latest = self._find_latest_video()
+                if latest:
+                    mp4_path = latest
+
+        if mp4_path:
+            self._load_preview(mp4_path)
         else:
             if hasattr(self, "preview_label"):
-                self.preview_label.setText("Download complete, but no playable file found.")
+                self.preview_label.setText("No MP4 found for this download. Try MP4 format.")
 
     def _find_latest_video(self) -> Path | None:
         if not self._current_output_path or not self._current_output_path.exists():

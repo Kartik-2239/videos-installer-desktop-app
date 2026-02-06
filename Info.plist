@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>VideoDownloader</string>
+  <string>Orca</string>
   <key>CFBundleDisplayName</key>
-  <string>VideoDownloader</string>
+  <string>Orca</string>
   <key>CFBundleIdentifier</key>
-  <string>com.local.videodownloader</string>
+  <string>com.local.orca</string>
   <key>CFBundleVersion</key>
   <string>0.0.1</string>
   <key>CFBundleShortVersionString</key>

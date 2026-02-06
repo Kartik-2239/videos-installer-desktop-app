@@ -1,4 +1,4 @@
-# Video Downloader (made by codex)
+# Orca (made by codex)
 
 PySide6 app that downloads videos with `yt-dlp` + `ffmpeg` and previews them inside the UI.
 
@@ -18,7 +18,7 @@ python main.py
 ## Build (macOS)
 
 ```bash
-pyinstaller --noconfirm --windowed --name "VideoDownloader" \
+pyinstaller --noconfirm --windowed --name "Orca" \
   --add-binary "/path/to/yt-dlp:." \
   --add-binary "/path/to/ffmpeg:." \
   --add-binary "/path/to/ffprobe:." \
